@@ -33,4 +33,4 @@ aws cloudformation describe-stacks --stack-name $STACK_NAME
 
 # execute the lambda function
 aws lambda wait function-exists --function-name $LAMBDA_FUNC_NAME
-aws lambda invoke --function-name $LAMBDA_FUNC_NAME out --log-type Tail --query 'LogResult' --output text |  base64 -d
+aws lambda invoke --function-name $LAMBDA_FUNC_NAME out --log-type Tail --query 'LogResult' --output text |  base64 -di

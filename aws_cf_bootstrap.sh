@@ -2,6 +2,7 @@
 
 STACK_NAME="create-digit-count-pipeline"
 TEMPLATE_URL="file://create_pipeline.yml"
+LAMBDA_FUNC_NAME="digit-count out"
 
 if [ -z ${1} ]
 then
@@ -31,4 +32,5 @@ aws cloudformation wait stack-create-complete --stack-name $STACK_NAME
 aws cloudformation describe-stacks --stack-name $STACK_NAME
 
 # execute the lambda function
-aws lambda invoke --function-name digit-count out --log-type Tail --query 'LogResult' --output text |  base64 -d
+aws lambda wait function-exists --function-name $LAMBDA_FUNC_NAME
+aws lambda invoke --function-name $LAMBDA_FUNC_NAME out --log-type Tail --query 'LogResult' --output text |  base64 -d

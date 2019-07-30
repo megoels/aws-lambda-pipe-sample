@@ -179,6 +179,13 @@ Resources:
                 RoleArn: !GetAtt CloudFormationRole.Arn
                 StackName: !Ref AWS::StackName
                 TemplatePath: SourceOutput::create_pipeline.yml
+                ParameterOverrides: !Sub |
+                    {
+                      "GitHubOAuthToken": "${GitHubOAuthToken}",
+                      "GitHubOwner": "${GitHubOwner}",
+                      "GitHubRepo": "${GitHubRepo}",
+                      "GitHubBranch": "${GitHubBranch}"
+                    }
               InputArtifacts:
                 - Name: SourceOutput
         # build        

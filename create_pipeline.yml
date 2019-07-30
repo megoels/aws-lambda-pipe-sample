@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Pipeline for Lambda digit-count
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: digit-count-lambda-project
+  CapitalizedProjectName:
+    Type: String
+    Default: DigitCountLambdaProject
+  # *** Github params for application.
+  GitHubOAuthToken:
+    Type: String
+    NoEcho: true
+    MinLength: 40
+    MaxLength: 40
+    AllowedPattern: '[a-z0-9]*'
+  GitHubOwner:
+    Type: String
+    Default: megoels
+    AllowedPattern: "[A-Za-z0-9-]+"
+  GitHubRepo:
+    Type: String
+    Default: aws-lambda-pipe-sample
+    AllowedPattern: "[A-Za-z0-9-]+"
+  GitHubBranch:
+    Type: String
+    Default: master
+    AllowedPattern: "[A-Za-z0-9-]+"
+
+Resources:
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: CloudFormationRole
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-artifacts'
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    DependsOn: CloudFormationRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      Policies:
+        - PolicyName: ServiceRole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: CloudWatchWriteLogsPolicy
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Sid: S3GetObjectPolicy
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: '*'
+              - Sid: S3PutObjectPolicy
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: '*'
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    DependsOn: CloudFormationRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CloudFormationRole
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/python:2.7.12
+        Type: LINUX_CONTAINER
+      Name: !Sub '${ProjectName}'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 5 # must be between 5 minutes and 8 hours
+
+  PipelineWebhook:
+    # 'GithubWebhook'
+    # -- Updates are pushed from GitHub, rather than AWS having to poll
+    Type: 'AWS::CodePipeline::Webhook'
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GitHubOAuthToken
+      RegisterWithThirdParty: 'true'
+      Filters:
+      - JsonPath: "$.ref"
+        MatchEquals: refs/heads/{Branch}
+      TargetPipeline: !Ref CodePipeline
+      TargetAction: SourceAction
+      TargetPipelineVersion: !GetAtt CodePipeline.Version
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactsBucket
+      Name: !Sub '${ProjectName}'
+      RestartExecutionOnUpdate: true
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        # get sources
+        - Name: Source
+          Actions:
+          - Name: SourceAction
+            InputArtifacts: []
+            ActionTypeId:
+              Category: Source
+              Owner: ThirdParty
+              Version: 1
+              Provider: GitHub
+            OutputArtifacts:
+            - Name: SourceOutput
+            Configuration:
+              Owner: !Ref GitHubOwner
+              Repo: !Ref GitHubRepo
+              Branch: !Ref GitHubBranch
+              PollForSourceChanges: false
+              OAuthToken: !Ref GitHubOAuthToken
+        # pipe deploy from template
+        - Name: PipelineDeploy
+          Actions:
+            - Name: CreateUpdatePipeline
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_IAM
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                StackName: !Ref AWS::StackName
+                TemplatePath: SourceOutput::create_pipeline.yml
+              InputArtifacts:
+                - Name: SourceOutput
+        # build        
+        - Name: Build
+          Actions:
+            - Name: BuildAndTest
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        # lambda deploy
+        - Name: LambdaDeploy
+          Actions:
+            - Name: CreateUpdateLambda
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_IAM
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                StackName: !Sub '${ProjectName}-app'
+                TemplatePath: SourceOutput::lambda.yml
+                ParameterOverrides: '{"DeploymentPackageKey": {"Fn::GetArtifactAtt": ["BuildOutput", "ObjectKey"]}}'
+              InputArtifacts:
+                - Name: SourceOutput
+                - Name: BuildOutput
+
+Outputs:
+
+  ArtifactsBucket:
+    Description: S3 bucket holding all the OutputArtifacts of any pipeline stage
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub '${CapitalizedProjectName}PipelineArtifactsBucket'

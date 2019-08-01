@@ -12,6 +12,12 @@ then
 fi
 
 #aws configure
+if [[ "$*" == *-d* ]]
+then
+        echo "Will delete the stack $STACK_NAME ..."
+        aws cloudformation delete-stack --stack-name $STACK_NAME 
+        exit $?
+fi
 
 if [[ "$*" == *-u* ]]
 then
@@ -27,10 +33,12 @@ else
                 --capabilities CAPABILITY_IAM \
                 --parameters ParameterKey=GitHubOAuthToken,ParameterValue=${1}
 fi
-
+echo "Waiting until stack $STACK_NAME updated..."
 aws cloudformation wait stack-create-complete --stack-name $STACK_NAME
+# returns description for the created stack
 aws cloudformation describe-stacks --stack-name $STACK_NAME
 
-# execute the lambda function
+echo "Waiting for Lambda fuction to be created..."
 aws lambda wait function-exists --function-name $LAMBDA_FUNC_NAME
+echo "Executing Lambda function $LAMBDA_FUNC_NAME ..."
 aws lambda invoke --function-name $LAMBDA_FUNC_NAME out --log-type Tail --query 'LogResult' --output text |  base64 -di

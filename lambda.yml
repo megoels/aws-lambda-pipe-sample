@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: Digit Count Lambda function
 
 Parameters:
+  # 2 inputs for lambda deploy, capitalized project name and s3 bucket key
   CapitalizedProjectName:
     Type: String
     Default: DigitCountLambdaProject
@@ -10,6 +11,7 @@ Parameters:
     Description: An S3 object key pointing of a ZIP file, an archive of everything needed to run the Lambda function. It is the output of the Build stage of the pipeline.
 
 Resources:
+  # Create Lambda function execution role that grants it permission to access AWS services and resources.
   LambdaRunnerRole:
     Type: AWS::IAM::Role
     Properties:
@@ -25,14 +27,17 @@ Resources:
       Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
+  # Create Lambda function
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html
   LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
       Code:
+        # get the code for the lambda function from s3 bucket, the zip which built by previous stage
         S3Bucket:
+          # Fn::ImportValue returns the value of an output exported by the parent stack. in our case will get the name of s3 bucket
           'Fn::ImportValue': !Sub '${CapitalizedProjectName}PipelineArtifactsBucket'
-        S3Key: !Ref DeploymentPackageKey
+        S3Key: !Ref DeploymentPackageKey # get the key which passed as arg
       FunctionName: digit-count
       Handler: main.handler
       Role: !GetAtt LambdaRunnerRole.Arn
@@ -40,5 +45,6 @@ Resources:
 
 Outputs:
   LambdaFunction:
+    # Return LARN of the created Lambda. Amazon Resource Names (ARNs) uniquely identify AWS resources.
     Description: The ARN of the created Lambda function
     Value: !GetAtt LambdaFunction.Arn

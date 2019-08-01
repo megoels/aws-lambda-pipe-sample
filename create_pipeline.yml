@@ -29,12 +29,37 @@ Parameters:
     AllowedPattern: "[A-Za-z0-9-]+"
 
 Resources:
-  ArtifactsBucket:
-    Type: AWS::S3::Bucket
-    DependsOn: CloudFormationRole
-    DeletionPolicy: Retain
+  # *** Github Webhook
+  # --- Updates are pushed from GitHub, rather than AWS having to poll
+  # https://docs.aws.amazon.com/codepipeline/latest/userguide/pipelines-webhooks-create-cfn.html
+  PipelineWebhook:
+    Type: 'AWS::CodePipeline::Webhook'
     Properties:
-      BucketName: !Sub '${ProjectName}-artifacts'
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GitHubOAuthToken
+      RegisterWithThirdParty: 'true'
+      Filters:
+      - JsonPath: "$.ref"
+        MatchEquals: refs/heads/{Branch}
+      TargetPipeline: !Ref CodePipeline
+      TargetAction: SourceAction
+      TargetPipelineVersion: !GetAtt CodePipeline.Version
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
 
   CodeBuildRole:
     Type: AWS::IAM::Role
@@ -89,53 +114,36 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
 
-  CloudFormationRole:
-    Type: AWS::IAM::Role
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: CloudFormationRole
+    DeletionPolicy: Retain
     Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Action:
-              - sts:AssumeRole
-            Principal:
-              Service:
-                - cloudformation.amazonaws.com
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
+      BucketName: !Sub '${ProjectName}-artifacts'
 
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-codebuild-project.html
+  # Configure how AWS CodeBuild builds your source code.
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
     DependsOn: CloudFormationRole
     Properties:
       Artifacts:
+        # The build project has build output generated through AWS CodePipeline.
         Type: CODEPIPELINE
       Environment:
-        ComputeType: BUILD_GENERAL1_SMALL
+        # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-codebuild-project-environment.html
+        ComputeType: BUILD_GENERAL1_SMALL # use up to 3 GB memory and 2 vCPUs for builds.
         Image: aws/codebuild/python:2.7.12
         Type: LINUX_CONTAINER
       Name: !Sub '${ProjectName}'
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Source:
-        Type: CODEPIPELINE
-      TimeoutInMinutes: 5 # must be between 5 minutes and 8 hours
+        Type: CODEPIPELINE # The source code settings are specified in the source action of a pipeline in AWS CodePipeline.
+        # Note: with the source CODEPIPELINE webhook can't be set !
+      TimeoutInMinutes: 5 # timing out any related build that did not get marked as completed (must be between 5 minutes and 8 hours).
 
-  PipelineWebhook:
-    # 'GithubWebhook'
-    # -- Updates are pushed from GitHub, rather than AWS having to poll
-    Type: 'AWS::CodePipeline::Webhook'
-    Properties:
-      Authentication: GITHUB_HMAC
-      AuthenticationConfiguration:
-        SecretToken: !Ref GitHubOAuthToken
-      RegisterWithThirdParty: 'true'
-      Filters:
-      - JsonPath: "$.ref"
-        MatchEquals: refs/heads/{Branch}
-      TargetPipeline: !Ref CodePipeline
-      TargetAction: SourceAction
-      TargetPipelineVersion: !GetAtt CodePipeline.Version
-
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-codepipeline-pipeline.html
+  # Create CodePipeline pipeline that describes how software changes go through a release process
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
@@ -143,10 +151,11 @@ Resources:
         Type: S3
         Location: !Ref ArtifactsBucket
       Name: !Sub '${ProjectName}'
-      RestartExecutionOnUpdate: true
+      RestartExecutionOnUpdate: true # Indicates whether to rerun the CodePipeline pipeline after you update it.
       RoleArn: !GetAtt CodePipelineRole.Arn
+      # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-codepipeline-pipeline-stages.html
       Stages:
-        # get sources
+        # Get sources from github
         - Name: Source
           Actions:
           - Name: SourceAction
@@ -164,8 +173,10 @@ Resources:
               Branch: !Ref GitHubBranch
               PollForSourceChanges: false
               OAuthToken: !Ref GitHubOAuthToken
-        # pipe deploy from template
+        # Deploy from template - this to update or create the pipe in case of commit that updates the pipe in yaml
+        # TODO: find a way to decode params (because of token) or create one more template for github webhook and pipeline creation that will be updated only by the script (aws_cfn_bootsrap.sh)
         - Name: PipelineDeploy
+          # https://docs.aws.amazon.com/codepipeline/latest/userguide/actions.html        
           Actions:
             - Name: CreateUpdatePipeline
               ActionTypeId:
@@ -175,10 +186,11 @@ Resources:
                 Version: 1
               Configuration:
                 ActionMode: CREATE_UPDATE
-                Capabilities: CAPABILITY_IAM
+                Capabilities: CAPABILITY_IAM # In some cases, you must explicity acknowledge that your stack template contains certain capabilities in order for AWS CloudFormation to create the stack
                 RoleArn: !GetAtt CloudFormationRole.Arn
                 StackName: !Ref AWS::StackName
                 TemplatePath: SourceOutput::create_pipeline.yml
+                # pass github params to this action because it will try to create\update pipe from this template and the args are needed
                 ParameterOverrides: !Sub |
                     {
                       "GitHubOAuthToken": "${GitHubOAuthToken}",
@@ -186,24 +198,30 @@ Resources:
                       "GitHubRepo": "${GitHubRepo}",
                       "GitHubBranch": "${GitHubBranch}"
                     }
+              # artifact consumed by the action
               InputArtifacts:
                 - Name: SourceOutput
-        # build        
+        # CodeBuild build: https://docs.aws.amazon.com/codebuild/latest/userguide/concepts.html#concepts-how-it-works
+        # This stage build according to build spec file located at the repo.
+        # A build spec is a collection of build commands and related settings, in YAML format, that CodeBuild uses to run a build
+        # https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html
         - Name: Build
           Actions:
             - Name: BuildAndTest
               ActionTypeId:
                 Category: Build
                 Owner: AWS
-                Provider: CodeBuild
+                Provider: CodeBuild # there's custom providers: Custom CloudBees Custom Jenkins Custom TeamCity
                 Version: 1
               Configuration:
                 ProjectName: !Ref CodeBuildProject
+              # artifact consumed by the build action
               InputArtifacts:
                 - Name: SourceOutput
+              # outcome artifacts from the build action declaration
               OutputArtifacts:
                 - Name: BuildOutput
-        # lambda deploy
+        # Deploy the Lambda function
         - Name: LambdaDeploy
           Actions:
             - Name: CreateUpdateLambda
@@ -214,17 +232,19 @@ Resources:
                 Version: 1
               Configuration:
                 ActionMode: CREATE_UPDATE
-                Capabilities: CAPABILITY_IAM
+                Capabilities: CAPABILITY_IAM # In some cases, you must explicity acknowledge that your stack template contains certain capabilities in order for AWS CloudFormation to create the stack
                 RoleArn: !GetAtt CloudFormationRole.Arn
                 StackName: !Sub '${ProjectName}-app'
-                TemplatePath: SourceOutput::lambda.yml
-                ParameterOverrides: '{"DeploymentPackageKey": {"Fn::GetArtifactAtt": ["BuildOutput", "ObjectKey"]}}'
+                TemplatePath: SourceOutput::lambda.yml # lambda template located at scm root dir
+                ParameterOverrides: '{"DeploymentPackageKey": {"Fn::GetArtifactAtt": ["BuildOutput", "ObjectKey"]}}' # pass the s3 (bucket that hold the app outcome) key from BuildOutput arg to lambda deploy template
               InputArtifacts:
                 - Name: SourceOutput
                 - Name: BuildOutput
 
 Outputs:
-
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/outputs-section-structure.html
+  # declares output values that can import into other stacks
+  # in our case will declare the s3 bucket name to be imported later at lambda template
   ArtifactsBucket:
     Description: S3 bucket holding all the OutputArtifacts of any pipeline stage
     Value: !Ref ArtifactsBucket

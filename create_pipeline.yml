@@ -47,22 +47,39 @@ Resources:
       TargetPipelineVersion: !GetAtt CodePipeline.Version
 
   CloudFormationRole:
+    # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
+      # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements.html
         Version: 2012-10-17
         Statement:
           - Effect: Allow
+            # The specific action or actions that will be allowed or denied
             Action:
+              # https://docs.aws.amazon.com/STS/latest/APIReference/Welcome.html
+              # STS = AWS Security Token Service,
+              # it's web service that enables you to request temporary, limited-privilege credentials for AWS Identity 
+              # and Access Management (IAM) users or for users that you authenticate (federated users).
+              # AssumeRole, 
+              # Returns a set of temporary security credentials that you can use to access AWS resources that you might not normally have access to. 
+              # These temporary credentials consist of an access key ID, a secret access key, and a security token. Typically, you use AssumeRole within your account or for cross-account access.
               - sts:AssumeRole
+            # Use the Principal element to specify the IAM user, federated user, IAM role, AWS account, AWS service, or other principal entity that is allowed or denied access to a resource. You cannot use the Principal element in an IAM identity-based policy. 
             Principal:
-              Service:
+              Service: # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-services-that-work-with-iam.html
                 - cloudformation.amazonaws.com
       ManagedPolicyArns:
+        # ARNs = Amazon Resource Names
+        # https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
+        # AWS Managed Policies for Job Functions:
+        # https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_job-functions.html
+        # This is a bad practice to grant admin access, it is strongly recommended for the IAM role to have least privilege possible !
         - arn:aws:iam::aws:policy/AdministratorAccess
 
   CodeBuildRole:
     Type: AWS::IAM::Role
+    # DependsOn attribute make the resource depend on the external policy.
     DependsOn: CloudFormationRole
     Properties:
       AssumeRolePolicyDocument:
@@ -74,12 +91,14 @@ Resources:
             Principal:
               Service:
                 - codebuild.amazonaws.com
+      # Adds or updates an inline policy document that is embedded in the specified IAM role.
+      # It's List of Policy: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-iam-policy.html      
       Policies:
         - PolicyName: ServiceRole
           PolicyDocument:
             Version: 2012-10-17
             Statement:
-              - Sid: CloudWatchWriteLogsPolicy
+              - Sid: CloudWatchWriteLogsPolicy # Sid (statement ID) optional identifier for policy: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html
                 Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -114,6 +133,7 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
 
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-s3-bucket.html
   ArtifactsBucket:
     Type: AWS::S3::Bucket
     DependsOn: CloudFormationRole
@@ -133,7 +153,7 @@ Resources:
       Environment:
         # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-codebuild-project-environment.html
         ComputeType: BUILD_GENERAL1_SMALL # use up to 3 GB memory and 2 vCPUs for builds.
-        Image: aws/codebuild/python:2.7.12
+        Image: aws/codebuild/python:2.7.12 # Docker image to use for this build project.
         Type: LINUX_CONTAINER
       Name: !Sub '${ProjectName}'
       ServiceRole: !GetAtt CodeBuildRole.Arn
@@ -173,8 +193,8 @@ Resources:
               Branch: !Ref GitHubBranch
               PollForSourceChanges: false
               OAuthToken: !Ref GitHubOAuthToken
-        # Deploy from template - this to update or create the pipe in case of commit that updates the pipe in yaml
-        # TODO: find a way to decode params (because of token) or create one more template for github webhook and pipeline creation that will be updated only by the script (aws_cfn_bootsrap.sh)
+        # Deploy pipe from template - this to update or create the pipe in case of commit that updates the pipe in yaml
+        # TODO: find a way to decode the params (like token) or create one more template for the github webhook and pipeline creation which will be updated only by script
         - Name: PipelineDeploy
           # https://docs.aws.amazon.com/codepipeline/latest/userguide/actions.html        
           Actions:
@@ -202,7 +222,7 @@ Resources:
               InputArtifacts:
                 - Name: SourceOutput
         # CodeBuild build: https://docs.aws.amazon.com/codebuild/latest/userguide/concepts.html#concepts-how-it-works
-        # This stage build according to build spec file located at the repo.
+        # This stage build the sources according to build spec file which located at the repo.
         # A build spec is a collection of build commands and related settings, in YAML format, that CodeBuild uses to run a build
         # https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html
         - Name: Build

@@ -11,5 +11,6 @@ def current_time_digits_instances():
         print "{}\t{}".format(i, now_time_digit_count.get(str(i), 0)) 
 
 def handler(event, context): 
+        bug testing
         current_time_digits_instances() 
         return None 
